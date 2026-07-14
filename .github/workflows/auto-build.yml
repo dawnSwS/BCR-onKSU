@@ -1,0 +1,106 @@
+name: Auto Build BCR KSU Edition
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+env:
+  SUFFIX: "-onKSU"
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Get upstream latest release
+        id: upstream
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          LATEST_TAG=$(curl -s -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/chenxiaolong/BCR/releases/latest | jq -r .tag_name)
+          if [ -z "$LATEST_TAG" ] || [ "$LATEST_TAG" == "null" ]; then
+            echo "Failed to fetch upstream tag."
+            exit 1
+          fi
+          echo "tag=${LATEST_TAG}" >> $GITHUB_OUTPUT
+
+      - name: Check if already released
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TARGET_TAG="${{ steps.upstream.outputs.tag }}${{ env.SUFFIX }}"
+          if gh release view "$TARGET_TAG" --repo ${{ github.repository }} > /dev/null 2>&1; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "Release $TARGET_TAG already exists. Skipping build."
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Checkout self
+        if: steps.check.outputs.skip == 'false'
+        uses: actions/checkout@v4
+
+      - name: Checkout upstream repository
+        if: steps.check.outputs.skip == 'false'
+        uses: actions/checkout@v4
+        with:
+          repository: chenxiaolong/BCR
+          ref: ${{ steps.upstream.outputs.tag }}
+          fetch-depth: 0
+          path: bcr-src
+
+      - name: Apply patch
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          cd bcr-src
+          git apply --3way ../913.patch
+
+      - name: Set up JDK 21
+        if: steps.check.outputs.skip == 'false'
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: 21
+          cache: gradle
+
+      - name: Build Project
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          cd bcr-src
+          chmod +x gradlew
+          
+          keytool -genkey -v -keystore release.jks -alias release -keyalg RSA -keysize 2048 -validity 10000 -storepass password -keypass password -dname "CN=Dummy, O=BCR"
+          
+          export RELEASE_KEYSTORE="$(pwd)/release.jks"
+          export RELEASE_KEY_ALIAS="release"
+          export RELEASE_KEYSTORE_PASSPHRASE="password"
+          export RELEASE_KEY_PASSPHRASE="password"
+          
+          ./gradlew --no-daemon zipRelease
+          
+          ZIP_FILE=$(find . -name "*release*.zip" | head -n 1)
+          NEW_NAME="BCR-${{ steps.upstream.outputs.tag }}${{ env.SUFFIX }}.zip"
+          mv "$ZIP_FILE" "../$NEW_NAME"
+          echo "zip_path=$NEW_NAME" >> $GITHUB_ENV
+
+      - name: Create GitHub Release
+        if: steps.check.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TARGET_TAG="${{ steps.upstream.outputs.tag }}${{ env.SUFFIX }}"
+          
+          cat << EOF > release_notes.md
+          Automated build based on upstream **${{ steps.upstream.outputs.tag }}**.
+          
+          - Applied patch 913 for KernelSU/APatch compatibility.
+          EOF
+          
+          gh release create "$TARGET_TAG" "${{ env.zip_path }}" \
+            --repo ${{ github.repository }} \
+            --title "BCR ${{ steps.upstream.outputs.tag }} (KSU / APatch Edition)" \
+            --notes-file release_notes.md

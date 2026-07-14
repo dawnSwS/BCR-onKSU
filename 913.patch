@@ -1,0 +1,91 @@
+From 0b13b53a2e4d9f98b58344e89e6ed61e353efa46 Mon Sep 17 00:00:00 2001
+From: dawn <dawn@k.com>
+Date: Tue, 14 Jul 2026 19:58:07 +0800
+Subject: [PATCH] fix(notifications): prevent crash under KernelSU mount
+ isolation
+
+Pass a pre-rasterized Bitmap (typ=BITMAP) instead of a resource ID for the notification icon.
+This removes the physical APK path dependency, fixing the BadForegroundServiceNotificationException
+caused when KernelSU's "Unmount modules" hides the APK from SystemUI.
+
+Fixes #912
+---
+ .../java/com/chiller3/bcr/Notifications.kt    | 25 +++++++++++++++----
+ 1 file changed, 20 insertions(+), 5 deletions(-)
+
+diff --git a/app/src/main/java/com/chiller3/bcr/Notifications.kt b/app/src/main/java/com/chiller3/bcr/Notifications.kt
+index 1174afc29..80300adaa 100644
+--- a/app/src/main/java/com/chiller3/bcr/Notifications.kt
++++ b/app/src/main/java/com/chiller3/bcr/Notifications.kt
+@@ -14,6 +14,9 @@ import android.content.ContentResolver
+ import android.content.Context
+ import android.content.Intent
+ import android.content.res.Resources
++import android.graphics.Bitmap
++import android.graphics.Canvas
++import android.graphics.drawable.Icon
+ import android.os.Build
+ import android.os.VibrationEffect
+ import android.os.Vibrator
+@@ -79,6 +82,18 @@ class Notifications(
+     private val prefs = Preferences(context)
+     private val notificationManager = context.getSystemService(NotificationManager::class.java)
+ 
++
++    private val safeSmallIcon: Icon = run {
++        val drawable = context.getDrawable(R.drawable.ic_launcher_quick_settings)!!
++        val width = drawable.intrinsicWidth.takeIf { it > 0 } ?: 96
++        val height = drawable.intrinsicHeight.takeIf { it > 0 } ?: 96
++        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
++        val canvas = Canvas(bitmap)
++        drawable.setBounds(0, 0, canvas.width, canvas.height)
++        drawable.draw(canvas)
++        Icon.createWithBitmap(bitmap)
++    }
++
+     /**
+      * Create a high priority notification channel for the persistent notification.
+      */
+@@ -159,7 +174,7 @@ class Notifications(
+                 setContentText(message)
+                 style = Notification.BigTextStyle()
+             }
+-            setSmallIcon(R.drawable.ic_launcher_quick_settings)
++            setSmallIcon(safeSmallIcon)
+             setContentIntent(pendingIntent)
+             setOngoing(true)
+             setOnlyAlertOnce(true)
+@@ -248,7 +263,7 @@ class Notifications(
+                 setContentText(text)
+                 style = Notification.BigTextStyle()
+             }
+-            setSmallIcon(R.drawable.ic_launcher_quick_settings)
++            setSmallIcon(safeSmallIcon)
+ 
+             if (file != null && !isDeviceProtectedStorage(file)) {
+                 // It is not possible to grant access to SAF URIs to other applications
+@@ -411,7 +426,7 @@ class Notifications(
+             })
+             style = Notification.BigTextStyle()
+ 
+-            setSmallIcon(R.drawable.ic_launcher_quick_settings)
++            setSmallIcon(safeSmallIcon)
+ 
+             build()
+         }
+@@ -436,7 +451,7 @@ class Notifications(
+             })
+             style = Notification.BigTextStyle()
+ 
+-            setSmallIcon(R.drawable.ic_launcher_quick_settings)
++            setSmallIcon(safeSmallIcon)
+ 
+             build()
+         }
+@@ -488,4 +503,4 @@ class Notifications(
+             }
+         }
+     }
+-}
++}
+\ No newline at end of file
